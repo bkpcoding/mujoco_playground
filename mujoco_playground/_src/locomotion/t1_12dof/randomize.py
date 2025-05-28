@@ -35,14 +35,14 @@ def domain_randomize(model: mjx.Model, rng: jax.Array):
 
     rng, key = jax.random.split(rng)
     frictionloss = model.dof_frictionloss[6:] * jax.random.uniform(
-        key, shape=(23,), minval=0.9, maxval=1.1
+        key, shape=(12,), minval=0.9, maxval=1.1
     )
     dof_frictionloss = model.dof_frictionloss.at[6:].set(frictionloss)
 
     # Scale armature: *U(1.0, 1.05).
     rng, key = jax.random.split(rng)
     armature = model.dof_armature[6:] * jax.random.uniform(
-        key, shape=(23,), minval=1.0, maxval=1.05
+        key, shape=(12,), minval=1.0, maxval=1.05
     )
     dof_armature = model.dof_armature.at[6:].set(armature)
 
@@ -65,7 +65,7 @@ def domain_randomize(model: mjx.Model, rng: jax.Array):
     qpos0 = model.qpos0
     qpos0 = qpos0.at[7:].set(
         qpos0[7:]
-        + jax.random.uniform(key, shape=(23,), minval=-0.05, maxval=0.05)
+        + jax.random.uniform(key, shape=(12,), minval=-0.05, maxval=0.05)
     )
 
     # Joint stiffness: *U(0.7, 1.3).
@@ -79,7 +79,7 @@ def domain_randomize(model: mjx.Model, rng: jax.Array):
     # Joint damping: *U(0.7, 1.3).
     rng, key = jax.random.split(rng)
     kd = model.dof_damping[6:] * jax.random.uniform(
-        key, (23,), minval=0.7, maxval=1.3
+        key, (12,), minval=0.7, maxval=1.3
     )
     dof_damping = model.dof_damping.at[6:].set(kd)
 
