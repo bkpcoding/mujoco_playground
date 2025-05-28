@@ -87,10 +87,10 @@ _envs = {
     "T1JoystickRoughTerrain": functools.partial(
         t1_joystick.Joystick, task="rough_terrain"
     ),
-    "T1LowDofJoystickFlatTerrain": functools.partial(
+    "T1LowDimJoystickFlatTerrain": functools.partial(
         t1_12dof_joystick.Joystick, task="flat_terrain"
     ),
-    "T1LowDofJoystickRoughTerrain": functools.partial(
+    "T1LowDimJoystickRoughTerrain": functools.partial(
         t1_12dof_joystick.Joystick, task="rough_terrain"
     ),
 }
@@ -119,8 +119,8 @@ _cfgs = {
     "SpotJoystickGaitTracking": spot_joystick_gait_tracking.default_config,
     "T1JoystickFlatTerrain": t1_joystick.default_config,
     "T1JoystickRoughTerrain": t1_joystick.default_config,
-    "T1LowDofJoystickFlatTerrain": t1_12dof_joystick.default_config,
-    "T1LowDofJoystickRoughTerrain": t1_12dof_joystick.default_config,
+    "T1LowDimJoystickFlatTerrain": t1_12dof_joystick.default_config,
+    "T1LowDimJoystickRoughTerrain": t1_12dof_joystick.default_config,
 }
 
 _randomizer = {
@@ -139,8 +139,8 @@ _randomizer = {
     "Go1Footstand": go1_randomize.domain_randomize,
     "T1JoystickFlatTerrain": t1_randomize.domain_randomize,
     "T1JoystickRoughTerrain": t1_randomize.domain_randomize,
-    "T1LowDofJoystickFlatTerrain": t1_12dof_randomize.domain_randomize,
-    "T1LowDofJoystickRoughTerrain": t1_12dof_randomize.domain_randomize,
+    "T1LowDimJoystickFlatTerrain": t1_12dof_randomize.domain_randomize,
+    "T1LowDimJoystickRoughTerrain": t1_12dof_randomize.domain_randomize,
 }
 
 

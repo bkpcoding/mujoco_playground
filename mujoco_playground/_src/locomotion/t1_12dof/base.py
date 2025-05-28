@@ -36,7 +36,7 @@ def get_assets() -> Dict[str, bytes]:
   return assets
 
 
-class T1LowDofEnv(mjx_env.MjxEnv):
+class T1LowDimEnv(mjx_env.MjxEnv):
   """Base class for 12-dof T1 environments."""
 
   def __init__(

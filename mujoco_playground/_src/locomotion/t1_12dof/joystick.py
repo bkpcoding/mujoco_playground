@@ -91,7 +91,7 @@ def default_config() -> config_dict.ConfigDict:
   )
 
 
-class Joystick(t1_base.T1LowDofEnv):
+class Joystick(t1_base.T1LowDimEnv):
   """Track a joystick command."""
 
   def __init__(
