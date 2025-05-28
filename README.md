@@ -1,3 +1,11 @@
+## License and Modifications
+
+This repository is a fork of MuJoCo Playground, which is licensed under the Apache License 2.0.
+This fork includes modifications by Younggyo Seo to support the custom tasks `T1LowDofJoystickFlatTerrain` and `T1LowDofJoystickRoughTerrain`.
+
+All original copyright remains with DeepMind Technologies Limited.
+See individual file headers for details on changes and license terms.
+
 # MuJoCo Playground
 
 [![Build](https://img.shields.io/github/actions/workflow/status/google-deepmind/mujoco_playground/ci.yml?branch=main)](https://github.com/google-deepmind/mujoco_playground/actions)
