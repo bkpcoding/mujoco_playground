@@ -739,3 +739,147 @@ class Joystick(t1_base.T1Env):
         jp.zeros(3),
         jp.hstack([lin_vel_x, lin_vel_y, ang_vel_yaw]),
     )
+
+
+def sparse_default_config() -> config_dict.ConfigDict:
+  """Default configuration for sparse reward T1 joystick task."""
+  config = default_config()
+  
+  # Override with sparse reward configuration
+  config.reward_config = config_dict.create(
+      scales=config_dict.create(
+          # Tracking related rewards (sparse with higher weights).
+          tracking_lin_vel=5.0,
+          tracking_ang_vel=2.0,
+          # Base related rewards (sparse critical failures only).
+          lin_vel_z=0.0,
+          ang_vel_xy=0.0,
+          orientation=-5.0,
+          base_height=0.0,
+          # Energy related rewards (disabled for sparsity).
+          torques=0.0,
+          action_rate=0.0,
+          energy=0.0,
+          dof_acc=0.0,
+          dof_vel=0.0,
+          # Feet related rewards (reduced for sparsity).
+          feet_clearance=0.0,
+          feet_air_time=0.0,
+          feet_slip=-2.0,
+          feet_height=0.0,
+          feet_phase=0.0,
+          # Other rewards (remove dense alive bonus).
+          stand_still=0.0,
+          alive=0.0,
+          termination=0.0,
+          # Pose related rewards (sparse critical failures only).
+          joint_deviation_knee=0.0,
+          joint_deviation_hip=0.0,
+          dof_pos_limits=-5.0,
+          pose=0.0,
+          feet_distance=0.0,
+          collision=-10.0,
+      ),
+      tracking_sigma=0.15,  # Tighter tracking requirement
+      tracking_threshold=0.1,  # Velocity error threshold for sparse reward
+      milestone_distance=2.0,  # Distance for milestone rewards
+      stability_duration=50,  # Timesteps of stability for bonus
+      max_foot_height=0.12,
+      base_height_target=0.665,
+  )
+  
+  return config
+
+
+class SparseJoystick(Joystick):
+  """Sparse reward version of the Joystick task."""
+
+  def __init__(
+      self,
+      task: str = "flat_terrain",
+      config: config_dict.ConfigDict = sparse_default_config(),
+      config_overrides: Optional[Dict[str, Union[str, int, list[Any]]]] = None,
+  ):
+    super().__init__(task=task, config=config, config_overrides=config_overrides)
+
+  @staticmethod
+  def get_config() -> config_dict.ConfigDict:
+    return sparse_default_config()
+
+  def _reward_tracking_lin_vel(
+      self,
+      commands: jax.Array,
+      local_linvel: jax.Array,
+  ) -> jax.Array:
+    """Sparse tracking reward - only reward when error is below threshold."""
+    lin_vel_error = jp.sqrt(jp.sum(jp.square(commands[:2] - local_linvel[:2])))
+    # Only give reward if tracking error is below threshold
+    return jp.where(
+        lin_vel_error < self._config.reward_config.tracking_threshold,
+        jp.exp(-lin_vel_error / self._config.reward_config.tracking_sigma),
+        0.0
+    )
+
+  def _reward_tracking_ang_vel(
+      self,
+      commands: jax.Array,
+      local_angvel: jax.Array,
+  ) -> jax.Array:
+    """Sparse angular velocity tracking reward."""
+    ang_vel_error = jp.abs(commands[2] - local_angvel[2])
+    # Only give reward if tracking error is below threshold
+    return jp.where(
+        ang_vel_error < self._config.reward_config.tracking_threshold,
+        jp.exp(-ang_vel_error / self._config.reward_config.tracking_sigma),
+        0.0
+    )
+
+  def _cost_orientation(self, gravity: jax.Array) -> jax.Array:
+    """Sparse orientation penalty - only penalize large deviations."""
+    # Only penalize if orientation error is significant (> 30 degrees)
+    # gravity[2] represents how aligned the robot is with gravity (1.0 = upright)
+    orientation_error = jp.arccos(jp.clip(gravity[2], -1, 1))
+    return jp.where(
+        orientation_error > jp.pi / 6,  # 30 degrees threshold
+        1.0 - gravity[2],
+        0.0
+    )
+
+  def _reward_milestone(self, info: dict[str, Any]) -> jax.Array:
+    """Reward for reaching distance milestones."""
+    # This would need episode state tracking - simplified version
+    distance_traveled = jp.linalg.norm(info.get("base_pos", jp.zeros(3))[:2])
+    milestone_reached = distance_traveled // self._config.reward_config.milestone_distance
+    # Simple milestone bonus (would need proper state tracking in practice)
+    return jp.where(milestone_reached > 0, 1.0, 0.0)
+
+  def _get_reward(
+      self,
+      data: mjx.Data,
+      action: jax.Array,
+      info: dict[str, Any],
+      metrics: dict[str, Any],
+      done: jax.Array,
+      first_contact: jax.Array,
+      contact: jax.Array,
+  ) -> dict[str, jax.Array]:
+    """Sparse reward computation with threshold-based rewards."""
+    del metrics  # Unused.
+    rewards = {
+        # Sparse tracking rewards with thresholds
+        "tracking_lin_vel": self._reward_tracking_lin_vel(
+            info["command"], info["filtered_linvel"]
+        ),
+        "tracking_ang_vel": self._reward_tracking_ang_vel(
+            info["command"], info["filtered_angvel"]
+        ),
+        # Sparse critical failure penalties
+        "orientation": self._cost_orientation(self.get_gravity(data)),
+        "feet_slip": self._cost_feet_slip(data, contact, info),
+        "dof_pos_limits": self._cost_joint_pos_limits(data.qpos[7:]),
+        "collision": self._cost_collision(data),
+    }
+    
+    # Remove zero-weight components to keep only active sparse rewards
+    return {k: v for k, v in rewards.items() 
+            if self._config.reward_config.scales.get(k, 0.0) != 0.0}

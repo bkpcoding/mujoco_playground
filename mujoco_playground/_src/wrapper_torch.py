@@ -199,6 +199,7 @@ class RSLRLBraxWrapper(VecEnv):
 
     return obs, reward, done, info_ret
 
+
   def reset(self):
     # todo add random init like in collab examples?
     self.env_state = self.reset_fn(self.key_reset)
@@ -239,3 +240,60 @@ class RSLRLBraxWrapper(VecEnv):
         self.observation_space  # pytype: disable=attribute-error
     )
     return info
+
+  def save_state(self):
+    """Save current environment state for deterministic reset.
+    
+    Returns:
+        List of individual environment states indexed by environment ID.
+    """
+    import copy
+    import jax
+    
+    # Save states indexed by environment ID
+    individual_states = []
+    
+    for env_id in range(self.num_envs):
+        # Extract state for this specific environment
+        env_state_single = jax.tree_map(lambda x: x[env_id], self.env_state)
+        key_reset_single = self.key_reset[env_id]
+        
+        individual_states.append({
+            'env_state': copy.deepcopy(env_state_single),
+            'key_reset': key_reset_single.copy()
+        })
+    
+    return individual_states
+
+  def restore_state(self, saved_states_list, env_mask):
+    """Restore specific environments to previously saved states.
+    
+    Args:
+        saved_states_list: List of saved states (each from save_state()[i])
+        env_mask: Boolean tensor indicating which environments to restore
+    """
+    import jax
+    import torch
+    
+    # Convert to boolean if needed
+    if isinstance(env_mask, torch.Tensor):
+        env_mask = env_mask.cpu().numpy().astype(bool)
+    
+    # Assert that list length matches number of True values in mask
+    num_to_restore = env_mask.sum()
+    assert len(saved_states_list) == num_to_restore, \
+        f"Length of saved_states_list ({len(saved_states_list)}) must equal number of True values in env_mask ({num_to_restore})"
+    
+    # Get indices of environments to restore
+    env_indices_to_restore = jax.numpy.where(env_mask)[0]
+    
+    # Restore each selected environment
+    for i, env_idx in enumerate(env_indices_to_restore):
+        single_state = saved_states_list[i]
+        
+        # Update specific environment state
+        def update_state(current, saved):
+            return current.at[env_idx].set(saved)
+        
+        self.env_state = jax.tree_map(update_state, self.env_state, single_state['env_state'])
+        self.key_reset = self.key_reset.at[env_idx].set(single_state['key_reset'])

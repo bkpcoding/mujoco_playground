@@ -93,6 +93,13 @@ _envs = {
     "T1LowDimJoystickRoughTerrain": functools.partial(
         t1_12dof_joystick.Joystick, task="rough_terrain"
     ),
+    # Sparse reward variants
+    "T1SparseJoystickFlatTerrain": functools.partial(
+        t1_joystick.SparseJoystick, task="flat_terrain"
+    ),
+    "T1SparseJoystickRoughTerrain": functools.partial(
+        t1_joystick.SparseJoystick, task="rough_terrain"
+    ),
 }
 
 _cfgs = {
@@ -121,6 +128,9 @@ _cfgs = {
     "T1JoystickRoughTerrain": t1_joystick.default_config,
     "T1LowDimJoystickFlatTerrain": t1_12dof_joystick.default_config,
     "T1LowDimJoystickRoughTerrain": t1_12dof_joystick.default_config,
+    # Sparse reward variants use sparse config
+    "T1SparseJoystickFlatTerrain": t1_joystick.sparse_default_config,
+    "T1SparseJoystickRoughTerrain": t1_joystick.sparse_default_config,
 }
 
 _randomizer = {
@@ -141,6 +151,9 @@ _randomizer = {
     "T1JoystickRoughTerrain": t1_randomize.domain_randomize,
     "T1LowDimJoystickFlatTerrain": t1_12dof_randomize.domain_randomize,
     "T1LowDimJoystickRoughTerrain": t1_12dof_randomize.domain_randomize,
+    # Sparse reward variants use same domain randomization as T1
+    "T1SparseJoystickFlatTerrain": t1_randomize.domain_randomize,
+    "T1SparseJoystickRoughTerrain": t1_randomize.domain_randomize,
 }
 
 
