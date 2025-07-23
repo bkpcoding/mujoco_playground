@@ -86,6 +86,10 @@ class RSLRLBraxWrapper(VecEnv):
       randomization_fn=None,
       render_callback=None,
       device_rank=None,
+      privileged_buffer=None,
+      reset_prob=0.5,
+      priority_alpha=0.6,
+      random_initial_state=False,
   ):
     import torch  # pytype: disable=import-error # pylint: disable=redefined-outer-name,unused-import,import-outside-toplevel
 
@@ -120,6 +124,10 @@ class RSLRLBraxWrapper(VecEnv):
         episode_length=episode_length,
         action_repeat=action_repeat,
         randomization_fn=v_randomization_fn,
+        privileged_buffer=privileged_buffer,
+        reset_prob=reset_prob,
+        priority_alpha=priority_alpha,
+        random_initial_state=random_initial_state,
     )
 
     self.render_callback = render_callback

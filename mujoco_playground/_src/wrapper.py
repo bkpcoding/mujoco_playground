@@ -23,15 +23,23 @@ from jax import numpy as jp
 import mujoco
 from mujoco import mjx
 import numpy as np
-
+import torch
 from mujoco_playground._src import mjx_env
+import copy
 
+from jax import tree_util
+
+def sizeof_pytree_mb(pytree) -> float:
+    leaves = tree_util.tree_leaves(pytree)
+    total_bytes = sum(leaf.size * leaf.dtype.itemsize for leaf in leaves)
+    return total_bytes / (1024 * 1024)  # Convert to MB
 
 class Wrapper(mjx_env.MjxEnv):
   """Wraps an environment to allow modular transformations."""
 
-  def __init__(self, env: Any):  # pylint: disable=super-init-not-called
+  def __init__(self, env: Any, random_initial_state: bool = False):  # pylint: disable=super-init-not-called
     self.env = env
+    self.random_initial_state = random_initial_state
 
   def reset(self, rng: jax.Array) -> mjx_env.State:
     return self.env.reset(rng)
@@ -93,6 +101,10 @@ def wrap_for_brax_training(
     randomization_fn: Optional[
         Callable[[mjx.Model], Tuple[mjx.Model, mjx.Model]]
     ] = None,
+    privileged_buffer=None,
+    reset_prob: float = 0.5,
+    priority_alpha: float = 0.6,
+    random_initial_state: bool = False,
 ) -> Wrapper:
   """Common wrapper pattern for all brax training agents.
 
@@ -114,11 +126,22 @@ def wrap_for_brax_training(
   if vision:
     env = MadronaWrapper(env, num_vision_envs, randomization_fn)
   elif randomization_fn is None:
-    env = brax_training.VmapWrapper(env)  # pytype: disable=wrong-arg-types
+    env = CustomVmapWrapper(env)  # Use our custom wrapper with reset_from_privileged_state
   else:
     env = BraxDomainRandomizationVmapWrapper(env, randomization_fn)
   env = brax_training.EpisodeWrapper(env, episode_length, action_repeat)
-  env = BraxAutoResetWrapper(env)
+  
+  # Use prioritized state auto-reset if buffer is provided, otherwise use standard auto-reset
+  if privileged_buffer is not None:
+    env = PrioritizedStateAutoResetWrapper(
+        env, 
+        privileged_buffer=privileged_buffer,
+        reset_prob=reset_prob,
+        priority_alpha=priority_alpha
+    )
+  else:
+    env = BraxAutoResetWrapper(env, random_initial_state)
+  
   return env
 
 
@@ -133,23 +156,106 @@ class BraxAutoResetWrapper(Wrapper):
     return state
 
   def step(self, state: mjx_env.State, action: jax.Array) -> mjx_env.State:
+    rng = jax.random.PRNGKey(0)
+    # split the rng based on batch size
+    rng = jax.random.split(rng, state.done.shape[0])
+    if 'steps' in state.info:
+        steps = state.info['steps']
+        steps = jp.where(state.done, jp.zeros_like(steps), steps)
+        state.info.update(steps=steps)
+    state = state.replace(done=jp.zeros_like(state.done))
+    state = self.env.step(state, action)
+    if not self.random_initial_state:
+      def where_done(x, y):
+        done = state.done
+        if done.shape:
+          done = jp.reshape(done, [x.shape[0]] + [1] * (len(x.shape) - 1))
+        return jp.where(done, x, y)
+      state.info['raw_obs'] = state.obs
+      data = jax.tree.map(where_done, state.info['first_state'], state.data)
+      obs = jax.tree.map(where_done, state.info['first_obs'], state.obs)
+      return state.replace(data=data, obs=obs)
+    else:
+      # def where_done(x, y):
+      #   done = state.done
+      #   if done.shape:
+      #     done = jp.reshape(done, [x.shape[0]] + [1] * (len(x.shape) - 1))
+      #   return jp.where(done, x, y)
+      state.info['raw_obs'] = state.obs
+      # data = jax.tree.map(where_done, state.info['first_state'], state.data)
+      # obs = jax.tree.map(where_done, state.info['first_obs'], state.obs)
+      # Apply normal auto-reset first
+      # state = state.replace(data=data, obs=obs)
+      state_done_prev = state.done
+      # set the first state to a random state
+      state = self.env.random_reset(rng, state, state.done)
+      # we need to set the done back to the previous state, because that
+      # will put the steps backs to 0 using the first command in this function afterwards
+      state = state.replace(done=state_done_prev)
+
+      return state
+
+class PrioritizedStateAutoResetWrapper(BraxAutoResetWrapper):
+  """Auto-reset wrapper with prioritized privileged state sampling."""
+  
+  def __init__(
+      self,
+      env: mjx_env.MjxEnv, 
+      privileged_buffer=None,
+      reset_prob: float = 0.5,
+      priority_alpha: float = 0.6,
+      min_buffer_size: int = 100
+  ):
+    """Initialize prioritized state auto-reset wrapper.
+    
+    Args:
+      env: Environment to wrap
+      privileged_buffer: Buffer containing privileged states (PrivilegedStateBuffer or SimpleReplayBuffer)
+      reset_prob: Probability of using privileged states vs normal reset (0.5 = 50%)
+      priority_alpha: Priority exponent for reward-based sampling (0 = uniform, 1 = proportional)
+      min_buffer_size: Minimum buffer size before using privileged resets
+    """
+    super().__init__(env)
+    self.privileged_buffer = privileged_buffer
+    self.reset_prob = reset_prob
+    self.priority_alpha = priority_alpha
+    self.min_buffer_size = min_buffer_size
+        
+
+  def step(self, state: mjx_env.State, action: jax.Array) -> mjx_env.State:
+    """Step with mixed privileged/normal auto-reset logic."""
+    # print(f"Stepped through the envs inside privileged brax auto resetter")
     if 'steps' in state.info:
       steps = state.info['steps']
       steps = jp.where(state.done, jp.zeros_like(steps), steps)
       state.info.update(steps=steps)
     state = state.replace(done=jp.zeros_like(state.done))
     state = self.env.step(state, action)
-
+    # print the size of Data in MB
+    # print(f"Size of Data: {sizeof_pytree_mb(state.data)} MB")
     def where_done(x, y):
       done = state.done
       if done.shape:
         done = jp.reshape(done, [x.shape[0]] + [1] * (len(x.shape) - 1))
       return jp.where(done, x, y)
-
     state.info['raw_obs'] = state.obs
     data = jax.tree.map(where_done, state.info['first_state'], state.data)
     obs = jax.tree.map(where_done, state.info['first_obs'], state.obs)
-    return state.replace(data=data, obs=obs)
+    # Apply normal auto-reset first
+    state = state.replace(data=data, obs=obs)
+    
+    # Apply privileged reset only to done environments
+    if self.privileged_buffer is not None:
+      # Sample privileged states from the buffer
+      batch_size = 1024 # TODO: make this dynamic
+      privileged_state = copy.deepcopy(self.privileged_buffer.sample(batch_size, use_prioritized=True))
+      # print(f"Sampled {batch_size} privileged states from buffer")
+    else:
+      # Fallback to dummy states
+      raise ValueError("No privileged buffer provided")
+    state = self.env.reset_from_privileged_state(privileged_state, state, state.done)
+    return state
+
 
 
 class BraxDomainRandomizationVmapWrapper(Wrapper):
@@ -185,6 +291,67 @@ class BraxDomainRandomizationVmapWrapper(Wrapper):
         self._mjx_model_v, state, action
     )
     return res
+
+
+class CustomVmapWrapper(Wrapper):
+  """Custom Vmap wrapper that includes reset_from_privileged_state method."""
+
+  def __init__(self, env: mjx_env.MjxEnv, batch_size: Optional[int] = None):
+    super().__init__(env)
+    self.batch_size = batch_size
+
+  def reset(self, rng: jax.Array) -> mjx_env.State:
+    if self.batch_size is not None:
+      rng = jax.random.split(rng, self.batch_size)
+    return jax.vmap(self.env.reset)(rng)
+
+  def step(self, state: mjx_env.State, action: jax.Array) -> mjx_env.State:
+    return jax.vmap(self.env.step)(state, action)
+
+  def _torch_to_jax(self, tensor):
+    """Convert PyTorch tensor to JAX array using DLPack."""
+    from jax.dlpack import from_dlpack  # pylint: disable=import-outside-toplevel
+    return from_dlpack(tensor)
+
+  def random_reset(self, rng: jax.Array, state: mjx_env.State, done_mask: jax.Array) -> mjx_env.State:
+    return jax.vmap(self.env.random_reset)(rng, state, done_mask)
+
+  def reset_from_privileged_state(self, obs: Any, state: mjx_env.State, done_mask: jax.Array) -> mjx_env.State:
+    """Reset environments from privileged state observations with auto tensor conversion.
+    
+    Args:
+      obs: Dictionary with 'privileged_state' key containing batch of observations.
+           Can be JAX array or PyTorch tensor that will be auto-converted.
+      state: Current environment state
+      done_mask: Boolean array indicating which environments should be reset
+      
+    Returns:
+      Batch of new environment states
+    """
+    # Handle tensor conversion if needed
+    if hasattr(obs, 'numpy'):  # PyTorch tensor
+      obs = self._torch_to_jax(obs)
+    elif isinstance(obs, dict) and 'privileged_state' in obs:
+      privileged_state = obs['privileged_state']
+      if hasattr(privileged_state, 'numpy'):  # PyTorch tensor
+        obs = {'privileged_state': self._torch_to_jax(privileged_state)}
+    
+    # Split RNG for batch if needed
+    # if self.batch_size is not None:
+    #   rng = jax.random.split(rng, self.batch_size)
+    
+    # Vectorize the single environment reset method
+    # def single_reset(obs_single, rng_single):
+    #   obs_dict = {'privileged_state': obs_single}
+    #   return self.env.reset_from_privileged_state(obs_dict, rng_single)
+    
+    # Handle both dict and array inputs
+    if isinstance(obs, dict):
+      privileged_batch = obs['privileged_state']
+    else:
+      privileged_batch = obs
+    
+    return jax.vmap(self.env.reset_from_privileged_state, in_axes=(0, 0, 0))(privileged_batch, state, done_mask)
 
 
 def _identity_vision_randomization_fn(

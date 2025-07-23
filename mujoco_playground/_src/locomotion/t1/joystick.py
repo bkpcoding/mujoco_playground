@@ -274,6 +274,80 @@ class Joystick(t1_base.T1Env):
     reward, done = jp.zeros(2)
     return mjx_env.State(data, obs, reward, done, metrics, info)
 
+  def random_reset(self, rng: jax.Array, state: mjx_env.State, should_reset: bool) -> mjx_env.State:
+
+    def apply_reset(args):
+      rng, state = args
+      new_state = self.reset(rng)
+      info = {
+          **new_state.info,
+          'episode_done': state.info.get('episode_done', jp.array(False)),
+          'episode_metrics': state.info.get('episode_metrics', {}),
+          'first_obs': state.info.get('first_obs', {
+              'state': state.obs,
+          }),
+          'first_state': state.info.get('first_state', state.obs),
+          'raw_obs': state.info.get('raw_obs', {
+              'state': state.obs,
+          }),
+          'steps': state.info.get('steps', jp.array(0)),
+          'truncation': state.info.get('truncation', jp.array(False)),
+      }
+      # make the state the same structure as we have the other stage
+      return new_state.replace(info=info)
+    
+    def no_reset(args):
+      _, state = args
+      return state
+    return jax.lax.cond(should_reset, apply_reset, no_reset, (rng, state))
+
+  def reset_from_privileged_state(
+      self, privileged_state: jax.Array, state: mjx_env.State, should_reset: bool
+  ) -> mjx_env.State:
+    """Lightweight reset using privileged observations - only updates physics data.
+    
+    Args:
+      privileged_state: Privileged state array from buffer
+      state: Current state with base data already reset by wrapper
+      should_reset: Boolean flag - if False, return state unchanged
+      
+    Returns:
+      Updated state with physics from privileged observation
+    """
+    def apply_reset(args):
+      privileged_state, state = args
+      # Extract key physical state from privileged observation
+      joint_angles = privileged_state[100:123] + self._default_pose
+      joint_velocities = privileged_state[123:146]
+      root_height = privileged_state[146]
+      # Calculate old contact state for new physics
+      # Update only essential physics state in existing data
+      new_qpos = state.data.qpos.at[2].set(root_height)      # Update height
+      new_qpos = new_qpos.at[7:].set(joint_angles)           # Update joint positions
+      new_qvel = state.data.qvel.at[6:].set(joint_velocities) # Update joint velocities
+      # Update MuJoCo data with single forward pass (much faster than full reset)
+      new_data = state.data.replace(qpos=new_qpos, qvel=new_qvel)
+      new_data = mjx.forward(self.mjx_model, new_data)
+
+      # # Calculate contact state for new physics
+      left_feet_contact = jp.array([
+          geoms_colliding(new_data, geom_id, self._floor_geom_id)
+          for geom_id in self._left_feet_geom_id
+      ])
+      right_feet_contact = jp.array([
+          geoms_colliding(new_data, geom_id, self._floor_geom_id)
+          for geom_id in self._right_feet_geom_id
+      ])
+      contact = jp.hstack([jp.any(left_feet_contact), jp.any(right_feet_contact)])
+      # Generate new observations with updated physics
+      new_obs = self._get_obs(new_data, state.info, contact)
+      return state.replace(data=new_data, obs=new_obs)
+    
+    def no_reset(args):
+      _, state = args
+      return state
+    return jax.lax.cond(should_reset, apply_reset, no_reset, (privileged_state, state))
+
   def step(self, state: mjx_env.State, action: jax.Array) -> mjx_env.State:
     state.info["rng"], push1_rng, push2_rng = jax.random.split(
         state.info["rng"], 3
@@ -448,21 +522,26 @@ class Joystick(t1_base.T1Env):
     root_height = data.qpos[2]
 
     privileged_state = jp.hstack([
-        state,
-        gyro,  # 3
-        accelerometer,  # 3
-        gravity,  # 3
-        linvel,  # 3
-        global_angvel,  # 3
-        joint_angles - self._default_pose,
-        joint_vel,
-        root_height,  # 1
-        data.actuator_force,
-        contact,  # 2
-        feet_vel,  # 4*3
-        info["feet_air_time"],  # 2
+        state,  # 0-84 85
+        gyro,  # 3 88
+        accelerometer,  # 3 91
+        gravity,  # 3 94
+        linvel,  # 3 97
+        global_angvel,  # 3 100
+        joint_angles - self._default_pose,  # 23 123
+        joint_vel,  # 23 146
+        root_height,  # 1 147
+        data.actuator_force,  # 14 
+        contact,  # 2 
+        feet_vel,  # 4*3 
+        info["feet_air_time"],  
     ])
-
+    # jax.debug.print("original qpos: {}, shape: {}", joint_angles - self._default_pose, (joint_angles - self._default_pose).shape)
+    # jax.debug.print("privileged_state qpos: {}, shape: {}", privileged_state[100:123], privileged_state[100:123].shape)
+    # jax.debug.print("original qvel: {}, shape: {}", joint_vel, joint_vel.shape)
+    # jax.debug.print("privileged_state qvel: {}, shape: {}", privileged_state[123:146], privileged_state[123:146].shape)
+    # jax.debug.print(f"Root height: {root_height}, shape: {root_height.shape}")
+    # jax.debug.print(f"privileged_state root height: {privileged_state[146]}, shape: {privileged_state[146].shape}")
     return {
         "state": state,
         "privileged_state": privileged_state,
